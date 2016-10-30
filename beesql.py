@@ -1,4 +1,6 @@
 # -*- coding: utf-8 -*-
+from functools import wraps
+
 import pymysql
 
 
@@ -8,6 +10,20 @@ DATABASE_SQLITE = 'sqlite'
 
 class BeeSQLError(Exception):
     pass
+
+
+def higher_order_keyword(func):
+    @wraps(func)
+    def wrapper(self, *args, **kwargs):
+        if not self.table:
+            raise BeeSQLError('No table selected. Use query.on to select a table first')
+
+        self.reset()
+        keyword = func(self, *args, **kwargs)
+        self.higher_order_keyword = keyword
+        return self
+
+    return wrapper
 
 
 class Row(object):
@@ -20,35 +36,68 @@ class Row(object):
         return getattr(self, column)
 
 
+class Keyword(object):
+    def __init__(self, database_type, table_name):
+        self.database_type = database_type
+        self.table_name = table_name
+
+
+class Select(Keyword):
+    def __init__(self, database_type, table_name, all=False, *args):
+        super().__init__(database_type, table_name)
+        self.all = all
+        self.fields = args[:]
+
+    def get_sql(self):
+        fields = "*" if self.all else ', '.join(self.fields)
+        params = {
+            'fields': fields,
+            'table': self.table_name,
+        }
+        sql = "SELECT {fields} FROM {table}".format(**params)
+        return sql
+
+
 class Query(object):
     """ SQL generator """
-    higher_order_keywords = ['select', 'insert', 'update', 'delete']
-
     def __init__(self, db):
         self.db = db
+        self.higher_order_keyword = None
         self._table = None
-        self._select = None
-        self._insert = None
-        self._update = None
-        self._delete = None
-        self._where = None
 
     def __repr__(self):
         return '{}: {}'.format(self.__class__, self.get_sql())
+
+    def reset(self):
+        self.higher_order_keyword = None
 
     @property
     def table(self):
         return self._table
 
     def on(self, table):
+        self.reset()
         self._table = table
         return self
+
+    @higher_order_keyword
+    def select(self, *args):
+        all = True if len(args) == 0 else False
+        select = Select(self.db.database_type, self.table, all, *args)
+        return select
 
     def get_format_params(self, formatted=False):
         return {
             'newtab': '\n  ' if formatted else ' ',
             'newln': '\n' if formatted else ' ',
         }
+
+    def get_sql(self):
+        if not self.higher_order_keyword:
+            raise BeeSQLError('Incomplete SQL')
+
+        sql = self.higher_order_keyword.get_sql()
+        return sql
 
 
 class MySQLQuery(Query):
@@ -67,15 +116,6 @@ class MySQLQuery(Query):
             sql = sql + '{newln}WHERE{newtab}{where}'.format(**params)
 
         return sql
-
-    def select(self, *args):
-        fields = args
-        if len(fields) == 0:
-            self._select = '*'
-        else:
-            self._select = ', '.join(fields)
-
-        return self
 
     def where(self, **kwargs):
         where_list = ["{}={}".format(key, self.db.escape(val)) for key, val in kwargs.items()]
@@ -164,8 +204,7 @@ class DB(object):
         self.unix_socket = unix_socket
 
     def query(self):
-        klass = self.database_type_to_query_class[self.database_type]
-        _query = klass(self)
+        _query = Query(self)
         return _query
 
     def __repr__(self):
