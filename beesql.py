@@ -12,14 +12,23 @@ class BeeSQLError(Exception):
     pass
 
 
+def validate_keyword_chaining(query, keyword):
+    if not query.higher_order_keyword:
+        return True
+
+    return isinstance(query.higher_order_keyword, type(keyword))
+
+
 def higher_order_keyword(func):
     @wraps(func)
     def wrapper(self, *args, **kwargs):
         if not self.table:
-            raise BeeSQLError('No table selected. Use query.on to select a table first')
+            raise BeeSQLError('No table selected. Use Query.on to select a table first')
 
-        self.reset()
         keyword = func(self, *args, **kwargs)
+        if not validate_keyword_chaining(self, keyword):
+            raise BeeSQLError('Invalid keyword chaining.')
+
         self.higher_order_keyword = keyword
         return self
 
@@ -36,17 +45,82 @@ class Row(object):
         return getattr(self, column)
 
 
+class LogicalOperator(object):
+    def __init__(self, db, data_operator):
+        self.data_operator = data_operator
+
+    def get_sql(self):
+        return ' {} {}'.format(self.KEYWORD, self.data_operator.get_sql())
+
+    def __repr__(self):
+        return self.get_sql()
+
+
+class LogicalAND(LogicalOperator):
+    KEYWORD = 'AND'
+
+
+class LogicalOR(LogicalOperator):
+    KEYWORD = 'OR'
+
+
+class DataOperator(object):
+    def __init__(self, query, column, value):
+        self.query = query
+        self.column = column
+        self.value = value
+
+    def set_column(self, column_name):
+        self.column = column_name
+
+    def get_sql(self):
+        return '{} {} {}'.format(self.column, self.get_operator(), self.value)
+
+    def __repr__(self):
+        return self.get_sql()
+
+
+class EqualOperator(DataOperator):
+    def get_operator(self):
+        return '='
+
+    def get_value(self):
+        return self.query.db.escape(self.value)
+
+
+class NotEqualOperator(DataOperator):
+    def get_operator(self):
+        return '!='
+
+    def get_value(self):
+        return self.query.db.escape(self.value)
+
+
 class Keyword(object):
-    def __init__(self, database_type, table_name):
-        self.database_type = database_type
-        self.table_name = table_name
+    def __init__(self, query, **kwargs):
+        self.query = query
 
 
 class Select(Keyword):
-    def __init__(self, database_type, table_name, all=False, *args):
-        super().__init__(database_type, table_name)
+    def __init__(self, query, table_name, all=False, *args):
+        super().__init__(query)
+        self.table_name = table_name
         self.all = all
-        self.fields = args[:]
+        self.fields = list(set(args))
+
+    def update(self, *args):
+        fields = list(args)
+        if self.all:
+            return
+
+        all = True if len(fields) == 0 else False
+        if all:
+            self.all = all
+            return
+
+        fields_set = set(self.fields)
+        fields_set.update(fields)
+        self.fields = list(fields_set)
 
     def get_sql(self):
         fields = "*" if self.all else ', '.join(self.fields)
@@ -58,18 +132,58 @@ class Select(Keyword):
         return sql
 
 
+class ColumnSelector(object):
+    def __init__(self, query, column_name, logical_operator_class):
+        self.query = query
+        self.column_name = column_name
+        self.logical_operator_class = logical_operator_class
+
+    def complete(self, data_operator):
+        if not self.query.condition:
+            condition = Where(self.query, op)
+            self.query.condition = condition
+        else:
+            logical_operator = logical_operator_class(self.query, op)
+            self.query.condition.chain([logical_operator])
+
+    def eq(self, value):
+        op = EqualOperator(self.query, self.column_name, value)
+        self.complete(op)
+        return self.query
+
+
+class Where(Keyword):
+    def __init__(self, query, data_operator, logical_operators=None):
+        super().__init__(query)
+        self.data_operator = data_operator
+        self.logical_operators = [] if not logical_operators else logical_operators[:]
+
+    def chain(self, logical_operators):
+        self.logical_operators.extend(logical_operators)
+
+    def get_sql(self):
+        sql = 'WHERE {}'.format(self.data_operator.get_sql())
+        for lop in self.logical_operators:
+            sql = sql + lop.get_sql()
+
+        return sql
+
+
 class Query(object):
     """ SQL generator """
     def __init__(self, db):
         self.db = db
         self.higher_order_keyword = None
+        self.condition = None
         self._table = None
+        self.partial_condition_column = None
 
     def __repr__(self):
         return '{}: {}'.format(self.__class__, self.get_sql())
 
     def reset(self):
         self.higher_order_keyword = None
+        self.condition = None
 
     @property
     def table(self):
@@ -82,9 +196,35 @@ class Query(object):
 
     @higher_order_keyword
     def select(self, *args):
-        all = True if len(args) == 0 else False
-        select = Select(self.db.database_type, self.table, all, *args)
+        if self.higher_order_keyword and isinstance(self.higher_order_keyword, Select):
+            self.higher_order_keyword.update(*args)
+            return self.higher_order_keyword
+
+        fields = args[:]
+        all = True if len(fields) == 0 else False
+        select = Select(self, self.table, all, *fields)
         return select
+
+    def where(self, column_name=None, **kwargs):
+        if column_name is None and not kwargs:
+            raise BeeSQLError('where statement can\'t be empty')
+
+        if column_name is not None:
+            selector = ColumnSelector(self, column_name, LogicalAND)
+            return selector
+        else:
+            data_ops = [EqualOperator(self, key, val) for key, val in kwargs.iteritems()]
+            if not self.condition:
+                data_op = data_ops.pop(0)
+                logical_ops = [LogicalAND(dop) for dop in data_ops]
+                where_keyword = Where(self.query, data_op, logical_ops)
+                self.condition = where_keyword
+            else:
+                logical_ops = [LogicalAND(dop) for dop in data_ops]
+                self.condition.chain(logical_ops)
+
+        return self
+
 
     def get_format_params(self, formatted=False):
         return {
