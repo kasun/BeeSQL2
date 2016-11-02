@@ -1,0 +1,2 @@
+class BeeSQLError(Exception):
+    pass

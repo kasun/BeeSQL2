@@ -1,38 +1,10 @@
 # -*- coding: utf-8 -*-
-from functools import wraps
-
 import pymysql
 
-
-DATABASE_MYSQL = 'mysql'
-DATABASE_SQLITE = 'sqlite'
-
-
-class BeeSQLError(Exception):
-    pass
-
-
-def validate_keyword_chaining(query, keyword):
-    if not query.higher_order_keyword:
-        return True
-
-    return isinstance(query.higher_order_keyword, type(keyword))
-
-
-def higher_order_keyword(func):
-    @wraps(func)
-    def wrapper(self, *args, **kwargs):
-        if not self.table:
-            raise BeeSQLError('No table selected. Use Query.on to select a table first')
-
-        keyword = func(self, *args, **kwargs)
-        if not validate_keyword_chaining(self, keyword):
-            raise BeeSQLError('Invalid keyword chaining.')
-
-        self.higher_order_keyword = keyword
-        return self
-
-    return wrapper
+from .decorators import primary_keyword, logical_operator
+from .mixins import DataOperatorFuncs
+from .settings import DATABASE_MYSQL, DATABASE_SQLITE
+from .exceptions import BeeSQLError
 
 
 class Row(object):
@@ -45,12 +17,24 @@ class Row(object):
         return getattr(self, column)
 
 
+class Rows(object):
+    def __init__(self, rows):
+        self.rows = rows
+
+    def count(self):
+        return len(self.rows)
+
+    def all(self):
+        return self.rows[:]
+
+
 class LogicalOperator(object):
-    def __init__(self, db, data_operator):
+    def __init__(self, query, data_operator):
+        self.query = query
         self.data_operator = data_operator
 
     def get_sql(self):
-        return ' {} {}'.format(self.KEYWORD, self.data_operator.get_sql())
+        return '{} {}'.format(self.KEYWORD, self.data_operator.get_sql())
 
     def __repr__(self):
         return self.get_sql()
@@ -74,26 +58,18 @@ class DataOperator(object):
         self.column = column_name
 
     def get_sql(self):
-        return '{} {} {}'.format(self.column, self.get_operator(), self.value)
+        return '{} {} {}'.format(self.column, self.get_operator(), self.get_value())
 
     def __repr__(self):
         return self.get_sql()
 
 
-class EqualOperator(DataOperator):
-    def get_operator(self):
-        return '='
-
-    def get_value(self):
-        return self.query.db.escape(self.value)
+class EqualOperator(DataOperatorFuncs, DataOperator):
+    OPERATOR = '='
 
 
-class NotEqualOperator(DataOperator):
-    def get_operator(self):
-        return '!='
-
-    def get_value(self):
-        return self.query.db.escape(self.value)
+class NotEqualOperator(DataOperatorFuncs, DataOperator):
+    OPERATOR = '<>'
 
 
 class Keyword(object):
@@ -140,16 +116,24 @@ class ColumnSelector(object):
 
     def complete(self, data_operator):
         if not self.query.condition:
-            condition = Where(self.query, op)
+            condition = Where(self.query, data_operator)
             self.query.condition = condition
         else:
-            logical_operator = logical_operator_class(self.query, op)
+            logical_operator = self.logical_operator_class(self.query, data_operator)
             self.query.condition.chain([logical_operator])
+
+        return self.query
 
     def eq(self, value):
         op = EqualOperator(self.query, self.column_name, value)
-        self.complete(op)
-        return self.query
+        return self.complete(op)
+
+    def neq(self, value):
+        op = NotEqualOperator(self.query, self.column_name, value)
+        return self.complete(op)
+
+    def __repr__(self):
+        return '{}: {}'.format(self.__class__, self.column_name)
 
 
 class Where(Keyword):
@@ -164,7 +148,7 @@ class Where(Keyword):
     def get_sql(self):
         sql = 'WHERE {}'.format(self.data_operator.get_sql())
         for lop in self.logical_operators:
-            sql = sql + lop.get_sql()
+            sql = '{} {}'.format(sql, lop.get_sql())
 
         return sql
 
@@ -173,16 +157,15 @@ class Query(object):
     """ SQL generator """
     def __init__(self, db):
         self.db = db
-        self.higher_order_keyword = None
+        self.primary_keyword = None
         self.condition = None
         self._table = None
-        self.partial_condition_column = None
 
     def __repr__(self):
         return '{}: {}'.format(self.__class__, self.get_sql())
 
     def reset(self):
-        self.higher_order_keyword = None
+        self.primary_keyword = None
         self.condition = None
 
     @property
@@ -194,11 +177,11 @@ class Query(object):
         self._table = table
         return self
 
-    @higher_order_keyword
+    @primary_keyword
     def select(self, *args):
-        if self.higher_order_keyword and isinstance(self.higher_order_keyword, Select):
-            self.higher_order_keyword.update(*args)
-            return self.higher_order_keyword
+        if self.primary_keyword and isinstance(self.primary_keyword, Select):
+            self.primary_keyword.update(*args)
+            return self.primary_keyword
 
         fields = args[:]
         all = True if len(fields) == 0 else False
@@ -213,55 +196,62 @@ class Query(object):
             selector = ColumnSelector(self, column_name, LogicalAND)
             return selector
         else:
-            data_ops = [EqualOperator(self, key, val) for key, val in kwargs.iteritems()]
+            data_ops = [EqualOperator(self, key, val) for key, val in kwargs.items()]
             if not self.condition:
                 data_op = data_ops.pop(0)
-                logical_ops = [LogicalAND(dop) for dop in data_ops]
-                where_keyword = Where(self.query, data_op, logical_ops)
+                logical_ops = [LogicalAND(self, dop) for dop in data_ops]
+                where_keyword = Where(self, data_op, logical_ops)
                 self.condition = where_keyword
             else:
-                logical_ops = [LogicalAND(dop) for dop in data_ops]
+                logical_ops = [LogicalAND(self, dop) for dop in data_ops]
                 self.condition.chain(logical_ops)
 
         return self
 
+    @logical_operator
+    def _and(self, column_name=None, **kwargs):
+        if column_name is None and not kwargs:
+            raise BeeSQLError('and operator can\'t be empty')
 
-    def get_format_params(self, formatted=False):
-        return {
-            'newtab': '\n  ' if formatted else ' ',
-            'newln': '\n' if formatted else ' ',
-        }
-
-    def get_sql(self):
-        if not self.higher_order_keyword:
-            raise BeeSQLError('Incomplete SQL')
-
-        sql = self.higher_order_keyword.get_sql()
-        return sql
-
-
-class MySQLQuery(Query):
-
-    def get_sql(self, formatted=False):
-        sql = ''
-        params = self.get_format_params(formatted)
-        params.update({
-            'select': self._select,
-            'from': self._table,
-            'where': self._where,
-        })
-        if self._select:
-            sql = 'SELECT{newtab}{select}{newln}FROM{newtab}{from}'.format(**params)
-        if sql and self._where:
-            sql = sql + '{newln}WHERE{newtab}{where}'.format(**params)
-
-        return sql
-
-    def where(self, **kwargs):
-        where_list = ["{}={}".format(key, self.db.escape(val)) for key, val in kwargs.items()]
-        self._where = ' AND '.join(where_list)
+        if column_name is not None:
+            selector = ColumnSelector(self, column_name, LogicalAND)
+            return selector
+        else:
+            data_ops = [EqualOperator(self, key, val) for key, val in kwargs.items()]
+            logical_ops = [LogicalAND(self, dop) for dop in data_ops]
+            self.condition.chain(logical_ops)
 
         return self
+
+    @logical_operator
+    def _or(self, column_name=None, **kwargs):
+        if column_name is None and not kwargs:
+            raise BeeSQLError('and operator can\'t be empty')
+
+        if column_name is not None:
+            selector = ColumnSelector(self, column_name, LogicalOR)
+            return selector
+        else:
+            data_ops = [EqualOperator(self, key, val) for key, val in kwargs.items()]
+            first_data_op = data_ops.pop(0)
+            logical_ops = [LogicalAND(self, dop) for dop in data_ops]
+            logical_ops.insert(0, LogicalOR(self, first_data_op))
+            self.condition.chain(logical_ops)
+
+        return self
+
+    def is_condition_set(self):
+        return bool(self.condition)
+
+    def get_sql(self):
+        if not self.primary_keyword:
+            raise BeeSQLError('Incomplete SQL')
+
+        sql = self.primary_keyword.get_sql()
+        if self.condition:
+            sql = '{} {}'.format(sql, self.condition.get_sql())
+
+        return sql
 
 
 class Connection(object):
@@ -302,6 +292,9 @@ class MySQLConnection(Connection):
                                                unix_socket=self.unix_socket, autocommit=True)
 
     def execute(self, query):
+        if isinstance(query, ColumnSelector):
+            raise BeeSQLError('No operation performed on {}'.format(query))
+
         if not isinstance(query, Query):
             raise BeeSQLError('Expected instance of {}. Got instance of'.format(type(Query), type(query)))
 
@@ -312,7 +305,7 @@ class MySQLConnection(Connection):
         results = cursor.fetchall()
         rows = [Row(**r) for r in results]
 
-        return rows
+        return Rows(rows)
 
     def close(self):
         if self.is_open():
@@ -322,9 +315,6 @@ class MySQLConnection(Connection):
 class DB(object):
     """ Database connection """
     supported_databases = [DATABASE_MYSQL, DATABASE_SQLITE]
-    database_type_to_query_class = {
-        DATABASE_MYSQL: MySQLQuery,
-    }
     database_type_to_connection = {
         DATABASE_MYSQL: MySQLConnection,
     }
@@ -344,6 +334,9 @@ class DB(object):
         self.unix_socket = unix_socket
 
     def query(self):
+        if not self.db_name:
+            raise BeeSQLError('No database chosen')
+
         _query = Query(self)
         return _query
 
@@ -351,9 +344,9 @@ class DB(object):
         return '<DB {}:{}'.format(self.database_type, self.db_name)
 
     def connect(self):
-        klass = self.database_type_to_connection[self.database_type]
-        conn = klass(username=self.username, password=self.password, db=self.db_name,
-                     host=self.host, port=self.port, unix_socket=self.unix_socket)
+        Connection = self.database_type_to_connection[self.database_type]
+        conn = Connection(username=self.username, password=self.password, db=self.db_name,
+                          host=self.host, port=self.port, unix_socket=self.unix_socket)
         return conn
 
     def use(self, db_name):
@@ -367,7 +360,7 @@ class DB(object):
 
     def escape(self, item):
         if self.database_type == DATABASE_MYSQL:
-            tmp_connection = pymysql.connections.Connection()
-            return tmp_connection.escape(item)
+            str_item = str(item)
+            return pymysql.escape_string(str_item)
 
         return item
