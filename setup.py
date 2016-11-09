@@ -1,7 +1,9 @@
 from setuptools import setup
 
 requires = ['PyMySQL']
-packages = ['beesql']
+packages = [
+    'beesql', 'beesql.query',
+]
 setup(
     name='BeeSQL',
     version='0.1',
