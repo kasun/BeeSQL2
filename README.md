@@ -20,9 +20,5 @@ SELECT name, id FROM community WHERE role = 'editor' AND age > 30 ORDER BY age D
 ## Documentation ##
 Documentation of BeeSQL2 can be found at <http://beesql.readthedocs.org>.
 
-## Requirements ##
-+ PyMysql <https://github.com/petehunt/PyMySQL> for MySQL connection.
-+ mock <http://www.voidspace.org.uk/python/mock> for testing.
-
 ## Installation ##
 Run python setup.py install
