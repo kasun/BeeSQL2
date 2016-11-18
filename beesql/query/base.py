@@ -247,10 +247,17 @@ class Statement(object):
     def __repr__(self):
         return '{}: {}'.format(self.__class__, self.get_sql())
 
+    def execute(self):
+        res = None
+        with self.query.db.connect() as conn:
+            res = conn.execute(self)
+
+        return res
+
     def get_sql(self):
         sql = self._get_sql()
-        for secondary_keyword in reversed(self.secondary_keywords):
-            sql = '{} {}'.format(sql, secondary_keyword.get_sql())
+        for sk in reversed(self.secondary_keywords):
+            sql = '{} {}'.format(sql, sk.get_sql())
 
         return sql
 
@@ -337,7 +344,7 @@ class Update(StatementWithCondition, Statement):
         if isinstance(value, int):
             return value
 
-        return "'{}'".format(self.query.db.escape(value))
+        return "'{}'".format(db.escape(value))
 
     def _get_sql(self):
         params = {
