@@ -448,6 +448,35 @@ class Delete(StatementWithCondition, Statement):
         return sql
 
 
+class Insert(Statement):
+    def __init__(self, query, *args):
+        super().__init__(query)
+        self.fields = args
+        self.values = []
+
+    def row(self, *args):
+        self.values.append(args)
+        return self
+
+    def _format(self, value):
+        db = self.query.db
+        if isinstance(value, int):
+            return str(value)
+
+        return "'{}'".format(db.escape(value))
+
+    def _get_sql(self):
+        sql = 'INSERT INTO {table} {fields} VALUES {values}'
+        values = ','.join(['({})'.format(','.join([self._format(v) for v in values])) for values in self.values])
+        params = {
+            'table': self.query.table,
+            'fields': '({})'.format(', '.join(self.fields)) if self.fields else '',
+            'values': values,
+        }
+        sql = sql.format(**params)
+        return sql
+
+
 class Count(StatementWithCondition, Statement):
     def __init__(self, query):
         super().__init__(query)
@@ -580,6 +609,11 @@ class Query(object):
         return delete_keyword
 
     @primary_keyword
+    def insert(self, *args):
+        insert_keyword = self.get_query_maker().make('insert')(self, *args)
+        return insert_keyword
+
+    @primary_keyword
     def count(self):
         count_statement = self.get_query_maker().make('count')(self)
         return count_statement
@@ -624,6 +658,7 @@ class QueryMaker(metaclass=QueryRegistry):
         'select': Select,
         'update': Update,
         'delete': Delete,
+        'insert': Insert,
         'count': Count,
         'where': Where,
         'group_by': GroupBy,
