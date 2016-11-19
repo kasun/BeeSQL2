@@ -389,6 +389,10 @@ class Count(StatementWithCondition, Statement):
 
     def _get_sql(self):
         sql = "SELECT count(*) AS count FROM {}".format(self.query.table)
+
+        if self.is_condition_set():
+            sql = '{} {}'.format(sql, self.condition.get_sql())
+
         return sql
 
 
