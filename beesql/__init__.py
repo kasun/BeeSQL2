@@ -35,6 +35,9 @@ class Rows(object):
     def __iter__(self):
         return iter(self.rows)
 
+    def __getitem__(self, key):
+        return self.all()[key]
+
     @property
     def count(self):
         return len(self.rows)

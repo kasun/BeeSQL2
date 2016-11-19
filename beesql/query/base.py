@@ -240,12 +240,20 @@ class Statement(object):
         self.query = query
         self.secondary_keywords = []
 
+    def __repr__(self):
+        return '{}: {}'.format(self.__class__, self.get_sql())
+
+    def __iter__(self):
+        rows = self.execute().all()
+        return iter(rows)
+
+    def __getitem__(self, key):
+        rows = self.execute().all()
+        return rows[key]
+
     def add_secondary_keyword(self, keyword):
         heap = self.secondary_keywords
         heapq.heappush(heap, keyword)
-
-    def __repr__(self):
-        return '{}: {}'.format(self.__class__, self.get_sql())
 
     def execute(self):
         res = None
