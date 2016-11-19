@@ -383,6 +383,15 @@ class Delete(StatementWithCondition, Statement):
         return sql
 
 
+class Count(StatementWithCondition, Statement):
+    def __init__(self, query):
+        super().__init__(query)
+
+    def _get_sql(self):
+        sql = "SELECT count(*) AS count FROM {}".format(self.query.table)
+        return sql
+
+
 class ColumnSelector(object):
     def __init__(self, statement, column_name, logical_operator_class):
         self.statement = statement
@@ -499,6 +508,11 @@ class Query(object):
         delete_keyword = self.get_query_maker().make('delete')(self)
         return delete_keyword
 
+    @primary_keyword
+    def count(self):
+        count_statement = self.get_query_maker().make('count')(self)
+        return count_statement
+
     def set_statement(self, statement):
         if not isinstance(statement, Statement):
             raise BeeSQLError('Expected instance of {}. got {}'.format(type(Statement), type(statement)))
@@ -539,6 +553,7 @@ class QueryMaker(metaclass=QueryRegistry):
         'select': Select,
         'update': Update,
         'delete': Delete,
+        'count': Count,
         'where': Where,
         'group_by': GroupBy,
         'order_by': OrderBy,
