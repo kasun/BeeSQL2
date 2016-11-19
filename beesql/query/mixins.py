@@ -66,3 +66,9 @@ class QueryMakerFuncs(object):
             return cls.NotInOperatorClass
         except AttributeError:
             return super(QueryMakerFuncs, cls).make_not_in_operator()
+
+
+class AggregationFuncs(object):
+    def _get_sql(self):
+        return '{}({}) AS {}'.format(self.FUNCTION_NAME, self.column_name,
+                                     self.as_name or '{}_{}'.format(self.FUNCTION_NAME.lower(), self.column_name))

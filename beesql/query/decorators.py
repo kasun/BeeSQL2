@@ -38,6 +38,16 @@ def logical_operator(func):
     return wrapper
 
 
+def aggregation(func):
+    @wraps(func)
+    def wrapper(self, *args, **kwargs):
+        aggregation_ = func(self, *args, **kwargs)
+        self.add_aggregation(aggregation_)
+        return self
+
+    return wrapper
+
+
 def complete_condition(query_part_name):
     """ Works with ColumnSelector class. """
     def decorator(func):

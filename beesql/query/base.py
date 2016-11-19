@@ -1,8 +1,9 @@
 import heapq
 
-from .mixins import DataOperatorFuncs
+from .mixins import DataOperatorFuncs, AggregationFuncs
 from ..exceptions import BeeSQLError
 from .decorators import primary_keyword, secondary_keyword, logical_operator, complete_condition
+from .decorators import aggregation
 
 
 class LogicalOperator(object):
@@ -234,6 +235,28 @@ class Limit(Keyword):
         return sql
 
 
+class Aggregation(object):
+    def __init__(self, column_name, as_name=None):
+        self.column_name = column_name
+        self.as_name = as_name
+
+    def get_sql(self):
+        sql = self._get_sql()
+        return sql
+
+
+class CountAggregation(AggregationFuncs, Aggregation):
+    FUNCTION_NAME = 'COUNT'
+
+
+class SumAggregation(AggregationFuncs, Aggregation):
+    FUNCTION_NAME = 'SUM'
+
+
+class AvgAggregation(AggregationFuncs, Aggregation):
+    FUNCTION_NAME = 'AVG'
+
+
 class Statement(object):
 
     def __init__(self, query, **kwargs):
@@ -274,6 +297,7 @@ class Select(StatementWithCondition, Statement):
 
     def __init__(self, query, all=False, *args):
         super().__init__(query)
+        self.aggregations = []
         self.all = all
         self.fields = list(set(args))
 
@@ -325,8 +349,32 @@ class Select(StatementWithCondition, Statement):
         limit_keyword = LimitClass(self, limit, offset)
         return limit_keyword
 
+    @aggregation
+    def sum(self, column_name, as_name=None):
+        AggregationClass = self.query.get_query_maker().make('sum_aggregation')
+        return AggregationClass(column_name, as_name)
+
+    @aggregation
+    def avg(self, column_name, as_name=None):
+        AggregationClass = self.query.get_query_maker().make('avg_aggregation')
+        return AggregationClass(column_name, as_name)
+
+    @aggregation
+    def count(self, column_name, as_name=None):
+        AggregationClass = self.query.get_query_maker().make('count_aggregation')
+        return AggregationClass(column_name, as_name)
+
+    def add_aggregation(self, aggregation):
+        self.aggregations.append(aggregation)
+
     def _get_sql(self):
-        fields = "*" if self.all else ', '.join(self.fields)
+        if self.all:
+            fields = '*'
+        else:
+            fields = self.fields[:]
+            fields.extend([ag.get_sql() for ag in self.aggregations])
+            fields = ', '.join(fields)
+
         params = {
             'fields': fields,
             'table': self.query.table,
@@ -572,6 +620,9 @@ class QueryMaker(metaclass=QueryRegistry):
         'greater_than_operator': GreaterThanOperator,
         'less_than_or_equal_operator': LessThanOrEqualOperator,
         'greater_than_or_equal_operator': GreaterThanOrEqualOperator,
+        'count_aggregation': CountAggregation,
+        'sum_aggregation': SumAggregation,
+        'avg_aggregation': AvgAggregation,
     }
 
     @classmethod
