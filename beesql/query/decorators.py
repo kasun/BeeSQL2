@@ -31,7 +31,7 @@ def logical_operator(func):
     @wraps(func)
     def wrapper(self, *args, **kwargs):
         if not self.is_condition_set():
-            raise BeeSQLError('No where condition set.')
+            raise BeeSQLError('No condition set.')
 
         return func(self, *args, **kwargs)
 
