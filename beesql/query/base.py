@@ -162,7 +162,7 @@ class StatementWithCondition(object):
             raise BeeSQLError('and operator can\'t be empty')
 
         if column_name is not None:
-            selector = ColumnSelector(self, column_name, LogicalANDClass)
+            selector = ANDColumnSelector(self, column_name)
             return selector
         else:
             data_ops = [EqualOperatorClass(self, key, val) for key, val in kwargs.items()]
@@ -181,7 +181,7 @@ class StatementWithCondition(object):
             raise BeeSQLError('and operator can\'t be empty')
 
         if column_name is not None:
-            selector = ColumnSelector(self, column_name, LogicalORClass)
+            selector = ORColumnSelector(self, column_name)
             return selector
         else:
             data_ops = [EqualOperatorClass(self, key, val) for key, val in kwargs.items()]
@@ -203,21 +203,21 @@ class WhereFuncMixin(object):
             raise BeeSQLError('where statement can\'t be empty')
 
         if column_name is not None:
-            selector = WhereColumnSelector(self, column_name, LogicalANDClass)
+            if self.is_condition_set():
+                selector = ANDColumnSelector(self, column_name)
+            else:
+                selector = WhereColumnSelector(self, column_name)
+
             return selector
         else:
             data_ops = [EqualOperatorClass(self, key, val) for key, val in kwargs.items()]
-            if not self.is_condition_set():
-                data_op = data_ops.pop(0)
-                logical_ops = [LogicalANDClass(self, dop) for dop in data_ops]
-                where_keyword = WhereClass(self, data_op, logical_ops)
-                self.set_active_condition(where_keyword)
-                self.add_secondary_keyword(where_keyword)
-            else:
-                logical_ops = [LogicalANDClass(self, dop) for dop in data_ops]
-                self.chain_condition(logical_ops)
+            data_op = data_ops.pop(0)
+            logical_ops = [LogicalANDClass(self, dop) for dop in data_ops]
+            where_keyword = WhereClass(self, data_op, logical_ops)
+            self.set_active_condition(where_keyword)
+            self.add_secondary_keyword(where_keyword)
 
-        return self
+            return self
 
 
 class HavingFuncMixin(object):
@@ -230,7 +230,7 @@ class HavingFuncMixin(object):
             raise BeeSQLError('having statement can\'t be empty')
 
         if column_name is not None:
-            selector = HavingColumnSelector(self, column_name, LogicalANDClass)
+            selector = HavingColumnSelector(self, column_name)
             return selector
         else:
             data_ops = [EqualOperatorClass(self, key, val) for key, val in kwargs.items()]
@@ -341,11 +341,20 @@ class Statement(object):
         return rows[key]
 
     def add_secondary_keyword(self, keyword):
-        heap = self.secondary_keywords
-        heapq.heappush(heap, keyword)
+        self.secondary_keywords.append(keyword)
 
-    def get_secondary_keywords(self):
-        return self.secondary_keywords[:]
+    def get_secondary_keywords(self, ordered=False):
+        if not ordered:
+            return self.secondary_keywords
+
+        ordered = []
+        kws = self.secondary_keywords[:]
+        heapq.heapify(kws)
+
+        while kws:
+            ordered.insert(0, heapq.heappop(kws))
+
+        return ordered
 
     def execute(self):
         res = None
@@ -356,7 +365,7 @@ class Statement(object):
 
     def get_sql(self):
         sql = self._get_sql()
-        for sk in reversed(self.get_secondary_keywords()):
+        for sk in self.get_secondary_keywords(ordered=True):
             sql = '{} {}'.format(sql, sk.get_sql())
 
         return sql
@@ -538,27 +547,14 @@ class Count(StatementWithCondition, Statement):
 
 
 class ColumnSelector(object):
-    def __init__(self, statement, column_name, logical_operator_class):
+    def __init__(self, statement, column_name):
         self.statement = statement
         self.column_name = column_name
-        self.logical_operator_class = logical_operator_class
 
     def get_operator(self, query_operator_name, value):
         OperatorClass = self.statement.query.get_query_maker().make(query_operator_name)
         op = OperatorClass(self.statement, self.column_name, value)
         return op
-
-    def complete(self, data_operator):
-        if not self.statement.is_condition_set():
-            condition_class = self.statement.query.get_query_maker().make(self.CONDITION_QUERY_PART)
-            condition = condition_class(self.statement, data_operator)
-            self.statement.set_active_condition(condition)
-            self.statement.add_secondary_keyword(condition)
-        else:
-            logical_operator = self.logical_operator_class(self.statement.query, data_operator)
-            self.statement.chain_condition([logical_operator])
-
-        return self.statement
 
     @complete_condition('equal_operator')
     def eq(self, value):
@@ -606,12 +602,39 @@ class ColumnSelector(object):
         return '{}: {}'.format(self.__class__, self.column_name)
 
 
-class WhereColumnSelector(ColumnSelector):
+class ConditionalColumnSelector(ColumnSelector):
+    def complete(self, data_operator):
+        condition_class = self.statement.query.get_query_maker().make(self.CONDITION_QUERY_PART)
+        condition = condition_class(self.statement, data_operator)
+        self.statement.set_active_condition(condition)
+        self.statement.add_secondary_keyword(condition)
+
+        return self.statement
+
+
+class LogicalColumnSelector(ColumnSelector):
+    def complete(self, data_operator):
+        operator_class = self.statement.query.get_query_maker().make(self.OPERATOR_QUERY_PART)
+        logical_operator = operator_class(self.statement.query, data_operator)
+        self.statement.chain_condition([logical_operator])
+
+        return self.statement
+
+
+class WhereColumnSelector(ConditionalColumnSelector):
     CONDITION_QUERY_PART = 'where'
 
 
-class HavingColumnSelector(ColumnSelector):
+class HavingColumnSelector(ConditionalColumnSelector):
     CONDITION_QUERY_PART = 'having'
+
+
+class ANDColumnSelector(LogicalColumnSelector):
+    OPERATOR_QUERY_PART = 'logical_and'
+
+
+class ORColumnSelector(LogicalColumnSelector):
+    OPERATOR_QUERY_PART = 'logical_or'
 
 
 class Query(object):
