@@ -3,6 +3,7 @@ import heapq
 from .mixins import DataOperatorFuncs, AggregationFuncs
 from ..exceptions import BeeSQLError
 from ..aggregation import AggregationField
+from ..utils import Alias
 from .decorators import primary_keyword, secondary_keyword, logical_operator, complete_condition
 from .decorators import aggregation
 
@@ -243,6 +244,34 @@ class HavingFuncMixin(object):
         return self
 
 
+class Join(Keyword):
+    KEYWORD_PRIORITY = 1
+
+    def __init__(self, statement, *args, **kwargs):
+        super().__init__(statement)
+        tables = []
+        for arg in args:
+            if isinstance(arg, Alias):
+                tables.append('{} AS {}'.format(arg.name, arg.alias))
+            if isinstance(arg, str):
+                parts = arg.split('__')
+                table_name = '{} AS {}'.format(parts[0], parts[1]) if len(parts) == 2 else parts[0]
+                tables.append(table_name)
+
+        self.tables = tables
+        self.conditions = {key.replace('__', '.'): val.replace('__', '.') for key, val in kwargs.items()}
+
+    def get_sql(self):
+        tables = self.tables
+        if len(tables) == 1:
+            sql = 'JOIN {}'.format(tables[0])
+        else:
+            sql = 'JOIN ({})'.format(', '.join(tables))
+
+        sql = '{} ON {}'.format(sql, ' AND '.join(['{} = {}'.format(k, v) for k, v in self.conditions.items()]))
+        return sql
+
+
 class WhereCondition(Condition):
     KEYWORD_PRIORITY = 2
     CLAUSE = 'WHERE'
@@ -376,14 +405,25 @@ class Select(WhereFuncMixin, HavingFuncMixin, StatementWithCondition, Statement)
     def __init__(self, query, aggregations=None, *args):
         super().__init__(query)
         self.aggregations = aggregations or []
-        self.all = all
-        self.fields = list(set(args))
+        fields = filter(lambda x: isinstance(x, str), args)
+        alias_fields = filter(lambda x: isinstance(x, Alias), args)
+        alias_fields = map(self._field_from_alias, alias_fields)
+        fields_set = set(fields)
+        fields_set.update(alias_fields)
+        self.fields = list(fields_set)
+
+    def _field_from_alias(self, alias):
+        return '{} AS {}'.format(alias.name, alias.alias)
 
     def select(self, *args):
         q_maker = self.query.get_query_maker()
         fields = filter(lambda x: isinstance(x, str), args)
+        alias_fields = filter(lambda x: isinstance(x, Alias), args)
+        alias_fields = map(self._field_from_alias, alias_fields)
+
         fields_set = set(self.fields)
         fields_set.update(fields)
+        fields_set.update(alias_fields)
         self.fields = list(fields_set)
 
         agg_fields = filter(lambda x: isinstance(x, AggregationField), args)
@@ -392,6 +432,12 @@ class Select(WhereFuncMixin, HavingFuncMixin, StatementWithCondition, Statement)
             self.add_aggregation(agg_query)
 
         return self
+
+    @secondary_keyword
+    def join(self, *args, **kwargs):
+        JoinClass = self.query.get_query_maker().make('join')
+        join_keyword = JoinClass(self, *args, **kwargs)
+        return join_keyword
 
     @secondary_keyword
     def group_by(self, *column_names):
@@ -645,10 +691,11 @@ class ORColumnSelector(LogicalColumnSelector):
 class Query(object):
     """ SQL generator """
 
-    def __init__(self, db, table_name=None, table_alias=None):
+    def __init__(self, db, table=None, table_alias=None):
         self.db = db
         self.statement = None
-        self._table = table_name
+
+        self._table = table
         self.table_alias = table_alias
 
     def __repr__(self):
@@ -666,7 +713,7 @@ class Query(object):
     def table(self):
         return self._table
 
-    def on(self, table, table_alias):
+    def on(self, table, table_alias=None):
         self.reset()
         self._table = table
         self.table_alias = table_alias
@@ -675,7 +722,7 @@ class Query(object):
     @primary_keyword
     def select(self, *args):
         q_maker = self.get_query_maker()
-        fields = filter(lambda x: isinstance(x, str), args)
+        fields = filter(lambda x: isinstance(x, (str, Alias)), args)
         agg_fields = filter(lambda x: isinstance(x, AggregationField), args)
         aggregation_queries = [q_maker.make(agg.QUERY_PART_NAME)(agg.column_name, agg.as_name) for agg in agg_fields]
         select = self.get_query_maker().make('select')(self, aggregation_queries, *fields)
@@ -746,6 +793,7 @@ class QueryMaker(metaclass=QueryRegistry):
         'delete': Delete,
         'insert': Insert,
         'count': Count,
+        'join': Join,
         'where': WhereCondition,
         'having': HavingCondition,
         'group_by': GroupBy,
