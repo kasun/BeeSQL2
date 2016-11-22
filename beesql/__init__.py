@@ -125,12 +125,12 @@ class DB(object):
         self.port = port
         self.unix_socket = unix_socket
 
-    def query(self, db_name=None):
+    def query(self, table_name=None, table_alias=None):
         if not self.db_name:
             raise BeeSQLError('No database chosen')
 
         if self.database_type == DATABASE_MYSQL:
-            _query = MySQLQuery(self, db_name)
+            _query = MySQLQuery(self, table_name, table_alias)
             return _query
 
     def __repr__(self):

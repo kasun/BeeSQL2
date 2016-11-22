@@ -461,9 +461,14 @@ class Select(WhereFuncMixin, HavingFuncMixin, StatementWithCondition, Statement)
             fields.extend([ag.get_sql() for ag in self.aggregations])
             fields = ', '.join(fields)
 
+        if self.query.table_alias:
+            table_name = '{} AS {}'.format(self.query.table, self.query.table_alias)
+        else:
+            table_name = self.query.table
+
         params = {
             'fields': fields,
-            'table': self.query.table,
+            'table': table_name,
         }
         sql = "SELECT {fields} FROM {table}".format(**params)
         return sql
@@ -640,10 +645,11 @@ class ORColumnSelector(LogicalColumnSelector):
 class Query(object):
     """ SQL generator """
 
-    def __init__(self, db, table_name=None):
+    def __init__(self, db, table_name=None, table_alias=None):
         self.db = db
         self.statement = None
         self._table = table_name
+        self.table_alias = table_alias
 
     def __repr__(self):
         try:
@@ -660,9 +666,10 @@ class Query(object):
     def table(self):
         return self._table
 
-    def on(self, table):
+    def on(self, table, table_alias):
         self.reset()
         self._table = table
+        self.table_alias = table_alias
         return self
 
     @primary_keyword
