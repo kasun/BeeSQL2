@@ -1,5 +1,7 @@
 # BeeSQL2 - Pythonic SQL Library #
 
+* This is still under development
+
 BeeSQL2 is a SQL abstraction library targetting python that helps,
 
 + Minimize repetitive steps in Python DB-API.
